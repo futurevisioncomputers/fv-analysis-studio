@@ -1,0 +1,12 @@
+# FV Analysis Studio — backend.
+#
+# The analysis itself is NOT listed here: `agents` is imported from the
+# fv-analysis plugin repo (a sibling checkout, or FV_ANALYSIS_PATH). Pinning a
+# copy of it here is how the two versions drift apart.
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.9
+
+# Read by the studio itself for the discovery screen, before the pipeline runs.
+pandas>=2.2
+openpyxl>=3.1

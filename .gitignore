@@ -1,0 +1,15 @@
+# Uploaded workbooks and everything derived from them. These hold real student
+# names and mobile numbers — this directory must never be committed.
+runs/
+
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Playwright output. Generated per-run, and the HTML report embeds page
+# snapshots taken against real uploaded workbooks.
+playwright-report/
+test-results/
