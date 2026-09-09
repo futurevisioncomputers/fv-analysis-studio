@@ -31,16 +31,71 @@ from pathlib import Path
 
 BASE = os.environ.get("FV_STUDIO_URL", "http://127.0.0.1:8010")
 
-# The restructured institute workbook. These tests assert against its real
-# shape, because a fixture that joins perfectly would not have caught the
-# float-vs-int bug that made 99% joins report as 0%.
+# The institute workbook. These tests assert against its real shape, because a
+# fixture that joins perfectly would not have caught the float-vs-int bug that
+# made 99% joins report as 0%. That rules out a synthetic fixture, so the file
+# has to be found rather than built.
 #
-# Resolved from the sibling plugin checkout — the assumption the backend
+# Everything is resolved from the sibling checkouts — the assumption the backend
 # already makes to import `agents` — rather than one machine's Downloads.
-_DEFAULT_WORKBOOK = (Path(__file__).resolve().parents[3]
-                     / "fv-analysis-marketplace-main" / "output"
-                     / "FV_Students_v2.xlsx")
-WORKBOOK = Path(os.environ.get("FV_TEST_WORKBOOK", str(_DEFAULT_WORKBOOK)))
+_WORKSPACE = Path(__file__).resolve().parents[3]
+_CANDIDATES = (
+    # Produced by the plugin's scripts/restructure_workbooks.py. Not in git:
+    # `output/` is ignored, and the script needs exported CSVs that are not in
+    # git either, so this exists only where someone has run the whole chain.
+    _WORKSPACE / "fv-analysis-marketplace-main" / "output" / "FV_Students_v2.xlsx",
+    # The shipped sample of the same shape: students (PK student_id) ->
+    # fee_receipts, certificates. This is what is actually on disk.
+    _WORKSPACE / "samples" / "FV_Students_v3_1.xlsx",
+)
+
+
+def _find_workbook() -> Path:
+    override = os.environ.get("FV_TEST_WORKBOOK")
+    if override:
+        return Path(override)
+    for candidate in _CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return _CANDIDATES[0]      # reported in the skip message below
+
+
+WORKBOOK = _find_workbook()
+
+# Why these tests are skipped, or None when they can run. Computed once so the
+# custom runner and pytest give the same answer for the same reason.
+def _blocker() -> "str | None":
+    if not WORKBOOK.exists():
+        listed = "\n    ".join(str(c) for c in _CANDIDATES)
+        return (
+            f"no institute workbook found. Looked in:\n    {listed}\n"
+            "  Set FV_TEST_WORKBOOK to one, or generate the first with:\n"
+            "    cd fv-analysis-marketplace-main && python scripts/restructure_workbooks.py --src <exported-csv-dir>"
+        )
+    try:
+        urllib.request.urlopen(BASE + "/api/health", timeout=5).close()
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"no backend at {BASE} ({exc}).\n"
+            "  Start it with: cd backend && python -m uvicorn app.main:app --port 8010"
+        )
+    return None
+
+
+# These tests drive a real server over real HTTP, so they need one running and a
+# real workbook to upload. Under pytest that has to be declared, because pytest
+# calls each `test_*` directly and never reaches the guard in `_run()` below —
+# without this a missing workbook surfaced as twelve identical FileNotFoundError
+# tracebacks that said nothing about what to do. Imported defensively so the
+# stdlib-only `python -m tests.test_studio` path still works with no pytest.
+_BLOCKER = _blocker()      # computed once: it makes a real request
+
+try:
+    import pytest as _pytest
+except ImportError:                                     # pragma: no cover
+    pass
+else:
+    pytestmark = _pytest.mark.skipif(_BLOCKER is not None, reason=_BLOCKER or "")
 
 QUESTION = "Which branches and course categories drive revenue and completion?"
 
@@ -357,14 +412,13 @@ def _cleanup() -> None:
 
 
 def _run() -> int:
-    if not WORKBOOK.exists():
-        print(f"SKIP all: workbook not found at {WORKBOOK}")
+    # Re-checked rather than reusing _BLOCKER: the module may have been imported
+    # before the server was started.
+    blocker = _blocker()
+    if blocker:
+        print(f"SKIP all: {blocker}")
         return 0
-    try:
-        _get("/api/health")
-    except Exception as exc:  # noqa: BLE001
-        print(f"SKIP all: no server at {BASE} ({exc})")
-        return 0
+    print(f"workbook: {WORKBOOK}")
 
     failures = 0
     for name, fn in sorted(globals().items()):
