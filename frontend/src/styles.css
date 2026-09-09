@@ -218,6 +218,10 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-size: 12px; }
   padding: 34px; text-align: center; background: var(--panel);
 }
 .drop[data-over="1"] { border-color: var(--accent); background: var(--accent-soft); }
+/* Reading the workbooks. Solid border rather than dashed: the zone is no longer
+   accepting a drop, and the parse takes long enough that a still screen reads
+   as a dead button. */
+.drop[data-busy="1"] { border-style: solid; border-color: var(--accent); cursor: progress; }
 
 .banner {
   padding: 10px 13px; border-radius: 8px; font-size: 13px;
@@ -250,3 +254,21 @@ iframe.report {
   width: 100%; height: 74vh; border: 1px solid var(--line);
   border-radius: var(--radius); background: #fff;
 }
+
+/* Earlier runs. A table rather than cards: the operator is scanning for one
+   row among many, and the columns line up so the eye can run down them. */
+table.runs { width: 100%; border-collapse: collapse; }
+table.runs td {
+  padding: 8px 10px; border-bottom: 1px solid var(--line);
+  vertical-align: middle; font-size: 13px;
+}
+table.runs tr:last-child td { border-bottom: 0; }
+table.runs tr:hover td { background: var(--panel-2); }
+
+/* The run name is the control that opens it, so it looks like a link and not
+   like the Delete button sitting on the same row. */
+button.linkish {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
+  cursor: pointer; text-align: left;
+}
+button.linkish:hover { text-decoration: underline; }

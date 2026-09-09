@@ -230,13 +230,38 @@ def _sources_for(path: Path) -> List[JsonDict]:
 
 
 @app.get("/api/runs")
-async def list_runs() -> List[JsonDict]:
-    out = []
-    for path in sorted(RUNS_DIR.glob("*/run.json"), reverse=True):
-        meta = json.loads(path.read_text())
-        out.append({"run_id": meta["run_id"], "file": meta.get("file"),
-                    "created_at": meta.get("created_at")})
-    return out
+async def list_runs(limit: int = 40) -> List[JsonDict]:
+    """Past runs, newest first, for the history list.
+
+    Ordering used to come from `sorted(glob(...), reverse=True)`, which sorts by
+    path — and the path carries a random hex run id, not a date. The "latest"
+    run was whichever id happened to sort highest, so the list was shuffled with
+    respect to time. It is sorted on `created_at` now.
+
+    Only cheap facts are read. `run.json` is small; the session file that knows
+    each stage's status is not, and reading a hundred of those to render one
+    list would make opening the app slow. Whether the report exists is a stat
+    call, which is enough for the list to say what is finished.
+    """
+    out: List[JsonDict] = []
+    for path in RUNS_DIR.glob("*/run.json"):
+        try:
+            meta = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue                      # a half-written or deleted run
+        files = meta.get("files") or [meta.get("file")]
+        out.append({
+            "run_id": meta["run_id"],
+            "file": meta.get("file"),
+            "files": [f for f in files if f],
+            "created_at": meta.get("created_at"),
+            "sheets": len((meta.get("integrity") or {}).get("tables") or []),
+            "rows": (meta.get("integrity") or {}).get("total_rows"),
+            "has_report": (path.parent / "session" / "artifacts"
+                           / "report.html").exists(),
+        })
+    out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return out[:max(limit, 1)]
 
 
 @app.get("/api/runs/{run_id}")

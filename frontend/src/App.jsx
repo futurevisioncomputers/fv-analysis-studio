@@ -63,6 +63,21 @@ export default function App() {
     api.model(runId).then(setModel).catch((e) => setError(e.message))
   }, [runId, tab])
 
+  // Reopen a finished run. Everything downstream is keyed on runId and read
+  // from disk, so this needs nothing the upload did not already save.
+  const openRun = useCallback(async (id) => {
+    setError(null)
+    setSelected(null)
+    setCheckpoint(null)
+    setLive(null)
+    setRunId(id)
+    setTab('pipeline')
+    await refresh(id)
+  }, [refresh])
+
+  // Returns the failure message, or null on success. The upload screen needs to
+  // know: reading two workbooks takes a second or two, and a click that reports
+  // nothing either way is indistinguishable from a broken button.
   async function onUpload(files, question) {
     setError(null)
     try {
@@ -72,7 +87,11 @@ export default function App() {
       setCheckpoint(null)
       await refresh(run_id)
       setTab('pipeline')
-    } catch (e) { setError(e.message) }
+      return null
+    } catch (e) {
+      setError(e.message)
+      return e.message
+    }
   }
 
   const progress = state?.progress ?? []
@@ -109,7 +128,12 @@ export default function App() {
       <div className="body">
         {error && <div className="banner bad" style={{ marginBottom: 14 }}>{error}</div>}
 
-        {!runId && <Upload onUpload={onUpload} rail={rail} />}
+        {!runId && (
+          <>
+            <Upload onUpload={onUpload} rail={rail} />
+            <History onOpen={openRun} onError={setError} />
+          </>
+        )}
 
         {runId && tab === 'pipeline' && (
           <div className="cols">
@@ -147,19 +171,119 @@ export default function App() {
   )
 }
 
+/* ----------------------------------------------------------------- history */
+
+function History({ onOpen, onError }) {
+  const [runs, setRuns] = useState(null)
+  const [busy, setBusy] = useState(null)
+
+  const load = useCallback(() => {
+    api.runs().then(setRuns).catch((e) => onError(e.message))
+  }, [onError])
+
+  useEffect(load, [load])
+
+  // Deleting a run deletes the uploaded workbook with it — real names and
+  // mobile numbers — so it asks first and says what goes.
+  const remove = async (run) => {
+    const what = (run.files || [run.file]).filter(Boolean).join(', ')
+    if (!window.confirm(`Delete this run and the uploaded ${what}?`)) return
+    setBusy(run.run_id)
+    try { await api.removeRun(run.run_id); load() }
+    catch (e) { onError(e.message) }
+    finally { setBusy(null) }
+  }
+
+  if (!runs) return null
+  if (!runs.length) {
+    return (
+      <div className="card">
+        <header><h2>Earlier runs</h2></header>
+        <p className="muted" style={{ margin: 0 }}>
+          Nothing yet. Uploaded workbooks and their reports appear here.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card">
+      <header>
+        <h2>Earlier runs</h2>
+        <span className="muted">{runs.length} most recent · newest first</span>
+      </header>
+      <table className="runs">
+        <tbody>
+          {runs.map((r) => (
+            <tr key={r.run_id}>
+              <td>
+                <button className="linkish" onClick={() => onOpen(r.run_id)}>
+                  {(r.files || [r.file]).filter(Boolean).join(' + ') || r.run_id}
+                </button>
+              </td>
+              <td className="mono dim">{fmtWhen(r.created_at)}</td>
+              <td className="mono dim">
+                {r.sheets ? `${r.sheets} sheets` : ''}
+                {r.rows ? ` · ${fmtInt(r.rows)} rows` : ''}
+              </td>
+              <td>
+                {r.has_report
+                  ? <span className="pill done">report</span>
+                  : <span className="pill pending">no report</span>}
+              </td>
+              <td style={{ textAlign: 'right' }}>
+                <button disabled={busy === r.run_id} onClick={() => remove(r)}>
+                  {busy === r.run_id ? '…' : 'Delete'}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// "12:58" today, "9 Sep" this year, "9 Sep 2025" before that — an operator
+// scanning for the run they made ten minutes ago should not have to read a
+// full ISO timestamp on every row.
+function fmtWhen(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(+d)) return iso
+  const now = new Date()
+  const sameDay = d.toDateString() === now.toDateString()
+  if (sameDay) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const opts = { day: 'numeric', month: 'short' }
+  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric'
+  return d.toLocaleDateString([], opts)
+}
+
 /* ------------------------------------------------------------------ upload */
 
 function Upload({ onUpload, rail }) {
   const [over, setOver] = useState(false)
   const [question, setQuestion] = useState('')
+  const [busy, setBusy] = useState(null)      // filenames being read
+  const [failed, setFailed] = useState(null)
   const input = useRef(null)
 
   // Every dropped file goes into one run. Uploading the admissions workbook
   // and the enquiries workbook separately gives two reports that each know
   // half the funnel; together they join on ENQ_ID.
-  const take = (files) => {
+  //
+  // Reading two workbooks takes a second or two, because every sheet is parsed
+  // and every foreign key tested before the screen changes. Without saying so,
+  // the click looks like it did nothing and the button invites a second press
+  // that would start a second run.
+  const take = async (files) => {
     const picked = Array.from(files || [])
-    if (picked.length) onUpload(picked, question)
+    if (!picked.length || busy) return
+    setFailed(null)
+    setBusy(picked.map((f) => f.name))
+    const message = await onUpload(picked, question)
+    setBusy(null)
+    if (message) setFailed(message)
   }
 
   return (
@@ -187,15 +311,38 @@ function Upload({ onUpload, rail }) {
                }} />
 
         <div className="drop" data-over={over ? '1' : '0'}
-             onDragOver={(e) => { e.preventDefault(); setOver(true) }}
+             data-busy={busy ? '1' : '0'}
+             onDragOver={(e) => { e.preventDefault(); if (!busy) setOver(true) }}
              onDragLeave={() => setOver(false)}
              onDrop={(e) => { e.preventDefault(); setOver(false); take(e.dataTransfer.files) }}>
-          <p style={{ margin: '0 0 12px' }}>Drop files here, or</p>
-          <button className="primary" onClick={() => input.current?.click()}>
-            Choose files
+          <p style={{ margin: '0 0 12px' }}>
+            {busy ? 'Reading the workbooks…' : 'Drop files here, or'}
+          </p>
+          <button className="primary" disabled={!!busy}
+                  onClick={() => input.current?.click()}>
+            {busy ? 'Working…' : 'Choose files'}
           </button>
+          {/* Reset value on click so re-picking the same file still fires
+              onChange — otherwise a retry after an error looks dead. */}
           <input ref={input} type="file" accept=".csv,.xlsx,.xls" hidden multiple
+                 onClick={(e) => { e.target.value = '' }}
                  onChange={(e) => take(e.target.files)} />
+
+          {busy && (
+            <p className="mono dim" style={{ marginBottom: 0, marginTop: 12, fontSize: 12 }}>
+              {busy.join(' · ')}
+            </p>
+          )}
+
+          {/* Shown here as well as in the top banner: the banner sits at the far
+              top of the page and can be scrolled out of sight, which loses the
+              only explanation of why nothing happened. */}
+          {failed && !busy && (
+            <p className="banner bad" style={{ marginTop: 12, marginBottom: 0 }}>
+              {failed}
+            </p>
+          )}
+
           <p className="dim" style={{ marginBottom: 0, marginTop: 14, fontSize: 12 }}>
             Files stay on this machine. Deleting the run deletes them.
           </p>

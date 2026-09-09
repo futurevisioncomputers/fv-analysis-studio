@@ -13,7 +13,8 @@ async function json(res) {
 
 export const api = {
   rail: () => fetch('/api/rail').then(json),
-  runs: () => fetch('/api/runs').then(json),
+  runs: (limit = 25) => fetch(`/api/runs?limit=${limit}`).then(json),
+  removeRun: (id) => fetch(`/api/runs/${id}`, { method: 'DELETE' }).then(json),
   run: (id) => fetch(`/api/runs/${id}`).then(json),
   model: (id) => fetch(`/api/runs/${id}/model`).then(json),
   checkpoint: (id, stage) => fetch(`/api/runs/${id}/checkpoint/${stage}`).then(json),
