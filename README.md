@@ -14,7 +14,7 @@ Two processes, both local.
 ```bash
 # backend — needs the plugin repo as a sibling, or set FV_ANALYSIS_PATH
 cd backend
-python -m uvicorn app.main:app --reload --port 8000
+python -m uvicorn app.main:app --reload --port 8010
 
 # frontend
 cd frontend
@@ -22,8 +22,22 @@ npm install
 npm run dev          # http://localhost:5173
 ```
 
-The frontend proxies `/api` to port 8000, so the browser sees one origin and
-SSE needs no CORS negotiation.
+The frontend proxies `/api` to port **8010**, so the browser sees one origin
+and SSE needs no CORS negotiation.
+
+**8010, not 8000.** A force-killed uvicorn on Windows can leave a LISTEN socket
+on 8000 that outlives its process and blocks rebinding, so the whole project —
+`vite.config.js`, `playwright.config.js` and the backend tests — standardises on
+8010. Start the backend anywhere else and the UI has no API: the proxy refuses
+the connection, every screen reads "Failed to fetch", and the backend looks
+perfectly healthy to `curl` on whichever port you actually used.
+
+To use a different port, move both ends together:
+
+```bash
+cd backend && python -m uvicorn app.main:app --reload --port 9000
+cd frontend && FV_API_URL=http://127.0.0.1:9000 npm run dev
+```
 
 ## What it does
 
