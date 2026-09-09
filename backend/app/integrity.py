@@ -13,7 +13,7 @@ check here compares ids as numbers when both sides are numeric.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
 
@@ -91,9 +91,46 @@ def _primary_key(frame: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def inspect(path: Path) -> JsonDict:
-    """Sheets, row counts, keys, and whether every foreign key resolves."""
-    sheets = read_sheets(path)
+def collect_sheets(paths: Sequence[Path]) -> Dict[str, tuple]:
+    """Every sheet across every uploaded file, in one namespace.
+
+    Returns `label -> (frame, source_path, sheet_name)`. The label is the bare
+    sheet name; only a name used by two different files is qualified with its
+    workbook, so the common case reads `enquiries`, not `FV_Enquiry__enquiries`.
+
+    One namespace is the point: the institute's admissions live in one workbook
+    and its enquiries in another, joined on ENQ_ID. Inspecting each file alone
+    can never see that link, and a conversion rate computed from the
+    admissions file by itself is 100% by construction — every row in it is an
+    admission.
+    """
+    seen: Dict[str, int] = {}
+    for path in paths:
+        for name in read_sheets(path):
+            seen[name] = seen.get(name, 0) + 1
+
+    out: Dict[str, tuple] = {}
+    for path in paths:
+        for name, frame in read_sheets(path).items():
+            label = f"{path.stem}::{name}" if seen.get(name, 0) > 1 else name
+            out[label] = (frame, path, name)
+    return out
+
+
+def inspect(paths) -> JsonDict:
+    """Sheets, row counts, keys, and whether every foreign key resolves.
+
+    Accepts one path or several; with several, foreign keys are tested *across*
+    the uploaded files as well as within each one.
+    """
+    if isinstance(paths, (str, Path)):
+        paths = [Path(paths)]
+    paths = [Path(p) for p in paths]
+
+    collected = collect_sheets(paths)
+    sheets = {label: frame for label, (frame, _p, _s) in collected.items()}
+    origin = {label: p.name for label, (_f, p, _s) in collected.items()}
+
     tables: List[JsonDict] = []
     keys: Dict[str, tuple] = {}          # sheet -> (column, id set)
 
@@ -103,6 +140,7 @@ def inspect(path: Path) -> JsonDict:
             keys[name] = (pk, _key_set(frame[pk]))
         tables.append({
             "sheet": name,
+            "file": origin.get(name, ""),
             "rows": int(len(frame)),
             "columns": int(len(frame.columns)),
             "primary_key": pk,
@@ -126,6 +164,9 @@ def inspect(path: Path) -> JsonDict:
             links.append({
                 "from_sheet": name,
                 "to_sheet": parent,
+                # A link whose two ends came from different uploads is the
+                # one worth seeing: it is what makes the files one dataset.
+                "cross_file": origin.get(name) != origin.get(parent),
                 "column": str(col),
                 "distinct_keys": len(child_ids),
                 "resolved": resolved,
@@ -136,7 +177,9 @@ def inspect(path: Path) -> JsonDict:
 
     broken = [l for l in links if not l["ok"]]
     return {
-        "file": path.name,
+        "file": ", ".join(p.name for p in paths),
+        "files": [p.name for p in paths],
+        "cross_file_links": sum(1 for l in links if l["cross_file"]),
         "tables": sorted(tables, key=lambda t: -t["rows"]),
         "links": sorted(links, key=lambda l: l["resolve_rate"]),
         "total_rows": sum(t["rows"] for t in tables),

@@ -63,10 +63,10 @@ export default function App() {
     api.model(runId).then(setModel).catch((e) => setError(e.message))
   }, [runId, tab])
 
-  async function onUpload(file, question) {
+  async function onUpload(files, question) {
     setError(null)
     try {
-      const { run_id } = await api.create(file, question)
+      const { run_id } = await api.create(files, question)
       setRunId(run_id)
       setSelected(null)
       setCheckpoint(null)
@@ -154,13 +154,22 @@ function Upload({ onUpload, rail }) {
   const [question, setQuestion] = useState('')
   const input = useRef(null)
 
-  const take = (files) => { if (files?.[0]) onUpload(files[0], question) }
+  // Every dropped file goes into one run. Uploading the admissions workbook
+  // and the enquiries workbook separately gives two reports that each know
+  // half the funnel; together they join on ENQ_ID.
+  const take = (files) => {
+    const picked = Array.from(files || [])
+    if (picked.length) onUpload(picked, question)
+  }
 
   return (
     <>
       <div className="card">
-        <header><h2>Upload a workbook</h2>
-          <span className="muted">.xlsx or .csv — every sheet becomes a source</span>
+        <header><h2>Upload workbooks</h2>
+          <span className="muted">
+            .xlsx or .csv — every sheet becomes a source. Upload related
+            workbooks together (admissions + enquiries) to join them.
+          </span>
         </header>
 
         {/* The question comes FIRST because it is needed first: Problem
@@ -181,11 +190,11 @@ function Upload({ onUpload, rail }) {
              onDragOver={(e) => { e.preventDefault(); setOver(true) }}
              onDragLeave={() => setOver(false)}
              onDrop={(e) => { e.preventDefault(); setOver(false); take(e.dataTransfer.files) }}>
-          <p style={{ margin: '0 0 12px' }}>Drop a file here, or</p>
+          <p style={{ margin: '0 0 12px' }}>Drop files here, or</p>
           <button className="primary" onClick={() => input.current?.click()}>
-            Choose a file
+            Choose files
           </button>
-          <input ref={input} type="file" accept=".csv,.xlsx,.xls" hidden
+          <input ref={input} type="file" accept=".csv,.xlsx,.xls" hidden multiple
                  onChange={(e) => take(e.target.files)} />
           <p className="dim" style={{ marginBottom: 0, marginTop: 14, fontSize: 12 }}>
             Files stay on this machine. Deleting the run deletes them.

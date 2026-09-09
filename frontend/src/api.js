@@ -18,9 +18,12 @@ export const api = {
   model: (id) => fetch(`/api/runs/${id}/model`).then(json),
   checkpoint: (id, stage) => fetch(`/api/runs/${id}/checkpoint/${stage}`).then(json),
 
-  create: (file, question) => {
+  // Takes one File or several. Several files are ONE run: the institute's
+  // admissions and enquiries are separate workbooks that join on ENQ_ID, and
+  // only together do they carry both sides of a conversion rate.
+  create: (files, question) => {
     const body = new FormData()
-    body.append('file', file)
+    for (const f of [].concat(files)) body.append('file', f)
     const qs = question ? `?question=${encodeURIComponent(question)}` : ''
     return fetch(`/api/runs${qs}`, { method: 'POST', body }).then(json)
   },

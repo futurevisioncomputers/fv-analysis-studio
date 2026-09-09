@@ -129,33 +129,58 @@ async def rail() -> List[JsonDict]:
 
 
 @app.post("/api/runs")
-async def create_run(file: UploadFile = File(...),
+async def create_run(file: List[UploadFile] = File(...),
                      question: str = "") -> JsonDict:
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in ALLOWED_SUFFIXES:
-        raise HTTPException(
-            400, f"{suffix or 'that'} is not a data file — upload "
-                 f"{', '.join(sorted(ALLOWED_SUFFIXES))}")
+    """Start a run from one or more uploaded workbooks.
+
+    Several files make ONE run, not one run each. The institute keeps its
+    admissions in one workbook and its enquiries in another, joined on ENQ_ID.
+    Analysed separately, the admissions file reports a 100% conversion rate —
+    true and useless, because every row in it is already an admission. The
+    enquiries that never converted are the denominator, and they live in the
+    other file.
+    """
+    uploaded = [f for f in file if f and f.filename]
+    if not uploaded:
+        raise HTTPException(400, "no file was uploaded")
+
+    for item in uploaded:
+        suffix = Path(item.filename or "").suffix.lower()
+        if suffix not in ALLOWED_SUFFIXES:
+            raise HTTPException(
+                400, f"{item.filename}: {suffix or 'that'} is not a data file "
+                     f"— upload {', '.join(sorted(ALLOWED_SUFFIXES))}")
 
     run_id = uuid.uuid4().hex[:12]
     run_dir = RUNS_DIR / run_id
     uploads = run_dir / "uploads"
     uploads.mkdir(parents=True, exist_ok=True)
-    target = uploads / Path(file.filename).name
-    with target.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+
+    targets: List[Path] = []
+    for item in uploaded:
+        target = uploads / Path(item.filename).name
+        with target.open("wb") as out:
+            shutil.copyfileobj(item.file, out)
+        targets.append(target)
 
     # The integrity report IS the first screen. Computed before any stage so
     # the operator sees whether the keys resolve before watching a pipeline
-    # run on data that cannot join.
+    # run on data that cannot join. With several files it also answers the
+    # question that decides whether uploading them together was worth it:
+    # do the keys resolve *across* the files?
     try:
-        report = inspect(target)
+        report = inspect(targets)
     except Exception as exc:  # noqa: BLE001
         shutil.rmtree(run_dir, ignore_errors=True)
         raise HTTPException(400, f"could not read that file: {exc}")
 
+    sources: List[JsonDict] = []
+    for target in targets:
+        sources.extend(_sources_for(target))
+    _disambiguate(sources)
+
     session = Session.create(str(run_dir / "session"))
-    session.state["data_sources"] = _sources_for(target)
+    session.state["data_sources"] = sources
     if question:
         session.state["question"] = question
         from scripts.run_pipeline import wrap_goal
@@ -163,10 +188,28 @@ async def create_run(file: UploadFile = File(...),
     session.save()
 
     (run_dir / "run.json").write_text(json.dumps({
-        "run_id": run_id, "file": target.name,
+        "run_id": run_id,
+        "file": ", ".join(t.name for t in targets),
+        "files": [t.name for t in targets],
         "created_at": session.state["created_at"], "integrity": report,
     }, indent=2, default=str))
     return {"run_id": run_id, "integrity": report}
+
+
+def _disambiguate(sources: List[JsonDict]) -> None:
+    """Qualify only the source names that two uploads both use.
+
+    Downstream every source is addressed by name, so a duplicate silently
+    shadows the earlier one. Renaming unconditionally would be worse: the
+    reports would read `FV_Students_v3_1__students` where `students` is what
+    the operator calls it.
+    """
+    counts: Dict[str, int] = {}
+    for s in sources:
+        counts[s["name"]] = counts.get(s["name"], 0) + 1
+    for s in sources:
+        if counts[s["name"]] > 1:
+            s["name"] = f"{Path(s['path']).stem}__{s['name']}"
 
 
 def _sources_for(path: Path) -> List[JsonDict]:
