@@ -24,18 +24,28 @@ export default defineConfig({
           proxy.on('proxyRes', (res) => { res.headers['x-accel-buffering'] = 'no' })
 
           // A backend on the wrong port fails silently and misleadingly: the
-          // proxy logs one ECONNREFUSED line, the browser only ever says
-          // "Failed to fetch", and curl against the port you did start reports
-          // a perfectly healthy API. Say what is actually wrong, once.
+          // proxy logs one ECONNREFUSED line, the browser gets a bare 500 whose
+          // body is empty — which the UI can only render as "Internal Server
+          // Error" — and curl against the port you did start reports a
+          // perfectly healthy API. Nothing anywhere names the port.
+          //
+          // So answer the request instead of letting it fail blank. `detail` is
+          // the field the API layer already reads its messages from, so this
+          // reaches the operator's screen in the app's own error banner.
           let warned = false
-          proxy.on('error', (err) => {
-            if (err.code !== 'ECONNREFUSED' || warned) return
-            warned = true
-            console.error(
-              `\n  No backend at ${API_TARGET}.\n` +
-              '  Start it with:  cd backend && python -m uvicorn app.main:app --reload --port 8010\n' +
-              '  Using another port? Set FV_API_URL to match when you run the frontend.\n'
-            )
+          proxy.on('error', (err, _req, res) => {
+            const message =
+              `No backend at ${API_TARGET}. Start it with: ` +
+              'cd backend && python -m uvicorn app.main:app --reload --port 8010 ' +
+              '(or set FV_API_URL to the port you are using).'
+            if (!warned) {
+              warned = true
+              console.error(`\n  ${message}\n`)
+            }
+            if (res && !res.headersSent && res.writeHead) {
+              res.writeHead(503, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ detail: message }))
+            }
           })
         },
       },
