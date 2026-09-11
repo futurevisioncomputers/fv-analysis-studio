@@ -233,26 +233,42 @@ def test_a_child_table_with_repeated_keys_still_resolves() -> None:
     assert receipts["resolve_rate"] == 1.0, receipts
 
 
-def test_a_run_without_a_question_blocks_and_says_why() -> None:
-    """Problem Definition refuses to invent a goal. That is not a crash."""
+def test_a_run_without_a_question_reports_what_the_data_supports() -> None:
+    """A workbook and no question is the ordinary way this gets used.
+
+    This used to stop at stage 1 asking what business problem to solve. There
+    was no problem statement, but there was a workbook — and the questions are
+    derived from its columns, so there was a real report to write. Asking first
+    only blocked an operator who dropped a sheet in and pressed run.
+    """
     run_id = _upload(WORKBOOK)["run_id"]
     _post(f"/api/runs/{run_id}/start", {"auto": True})
     state = _wait_idle(run_id)
+
     blocked = [r for r in state["progress"] if r["status"] == "blocked"]
-    assert blocked and blocked[0]["key"] == "problem", state["progress"][:2]
-    assert "clarification" in blocked[0]["summary"].lower(), blocked[0]["summary"]
-    # Nothing downstream ran on a brief that does not exist.
-    assert all(r["status"] == "pending" for r in state["progress"][1:])
+    assert not blocked, blocked
+    assert state["progress"][0]["status"] == "done", state["progress"][0]
+    assert state["artifacts"].get("report.html") is True, state["artifacts"]
 
 
-def test_the_clarification_is_answerable_without_re_uploading() -> None:
-    """The workbook has not changed — only the question has."""
+def test_the_question_is_answerable_without_re_uploading() -> None:
+    """The workbook has not changed — only the question has.
+
+    A run started with no question now completes on its own, so this is no
+    longer about unblocking one: it is about re-scoping a finished run and
+    having everything computed from the old brief thrown away.
+    """
     run_id = _upload(WORKBOOK)["run_id"]
     _post(f"/api/runs/{run_id}/start", {"auto": True})
     _wait_idle(run_id)
 
     answer = _post(f"/api/runs/{run_id}/question", {"question": QUESTION})
-    assert answer["cleared"] == ["problem"], answer
+    # Everything computed from the old brief goes, not just stage 1. When the
+    # run blocked at `problem` there was nothing downstream to discard; now that
+    # it completes, a new question invalidates all of it.
+    assert answer["cleared"][0] == "problem", answer
+    assert "analyst" in answer["cleared"], answer
+    assert "report" in answer["cleared"], answer
 
     _post(f"/api/runs/{run_id}/start", {"auto": True})
     state = _wait_idle(run_id)

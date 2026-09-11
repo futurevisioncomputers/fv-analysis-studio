@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from .config import (ALLOWED_SUFFIXES, PIPELINE_PATH, REFERENCE_SHEETS,
                      RUNS_DIR, SERVABLE_ARTIFACTS, ensure_pipeline_importable)
-from .integrity import inspect, read_sheets
+from .integrity import collect_sheets, inspect, read_sheets
 from .model import annotate
 from .runner import BUS, RUNNER, auto_stage_keys
 
@@ -278,10 +278,24 @@ async def data_model(run_id: str) -> JsonDict:
     """
     meta_path = _run_dir(run_id) / "run.json"
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-    upload = _run_dir(run_id) / "uploads" / str(meta.get("file") or "")
-    if not upload.exists():
+
+    # Every uploaded workbook, not just the first. `meta["file"]` is a display
+    # string — for a multi-file run it reads "A.xlsx, B.xlsx", which is not a
+    # path, so building one from it missed and this returned 404 on every run
+    # that uploaded more than one workbook. `files` is the list; older runs
+    # predate it and still carry a single usable name in `file`.
+    names = meta.get("files") or [meta.get("file")]
+    uploads = [_run_dir(run_id) / "uploads" / str(n) for n in names if n]
+    present = [p for p in uploads if p.exists()]
+    if not present:
         raise HTTPException(404, "the upload for this run is gone")
-    return annotate(read_sheets(upload))
+
+    # One namespace across the files, so a diagram node is filled by whichever
+    # workbook carries the column — the admissions and enquiries workbooks each
+    # hold half of the model.
+    sheets = {label: frame
+              for label, (frame, _p, _s) in collect_sheets(present).items()}
+    return annotate(sheets)
 
 
 @app.get("/api/runs/{run_id}/checkpoint/{stage}")
