@@ -31,6 +31,7 @@ from .config import (ALLOWED_SUFFIXES, PIPELINE_PATH, REFERENCE_SHEETS,
                      RUNS_DIR, SERVABLE_ARTIFACTS, ensure_pipeline_importable)
 from .integrity import collect_sheets, inspect, read_sheets
 from .model import annotate
+from .reportmodel import build as build_report_model
 from .runner import BUS, RUNNER, auto_stage_keys
 
 ensure_pipeline_importable()
@@ -296,6 +297,25 @@ async def data_model(run_id: str) -> JsonDict:
     sheets = {label: frame
               for label, (frame, _p, _s) in collect_sheets(present).items()}
     return annotate(sheets)
+
+
+@app.get("/api/runs/{run_id}/report-model")
+async def report_model(run_id: str) -> JsonDict:
+    """Everything a chart-drawing UI needs from this run, in one read.
+
+    The numbers already existed — 96 chart specs and a dozen KPI cards per run —
+    but only `report.html` could see them, so a React tab either fetched eight
+    truncated strings from a checkpoint or drew a constant. This serves the
+    computed values themselves.
+
+    Nothing here is recalculated, which is what keeps the two renderings of a
+    run honest with each other. A run mid-pipeline returns the sections that
+    have finished and empty ones for the rest rather than failing.
+    """
+    meta_path = _run_dir(run_id) / "run.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta.setdefault("run_id", run_id)
+    return build_report_model(_load(run_id).state, meta)
 
 
 @app.get("/api/runs/{run_id}/checkpoint/{stage}")

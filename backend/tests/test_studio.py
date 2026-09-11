@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -107,6 +108,11 @@ _created: list = []
 def _get(path: str):
     with urllib.request.urlopen(BASE + path, timeout=30) as res:
         return json.load(res)
+
+
+def _get_text(path: str) -> str:
+    with urllib.request.urlopen(BASE + path, timeout=30) as res:
+        return res.read().decode("utf-8", "replace")
 
 
 def _post(path: str, payload=None):
@@ -329,6 +335,73 @@ def test_the_operators_diagrams_are_annotated_with_real_coverage() -> None:
     assert {"course", "branch", "faculty"} <= present
     # Nothing in either workbook carries these, and the UI must not pretend.
     assert {"age", "area", "pincode"} <= set(admission["missing"])
+
+
+def test_the_report_model_serves_the_numbers_the_report_prints() -> None:
+    """The computed values reach HTTP, and they are the report's own.
+
+    Two renderings of one run that each do their own arithmetic will disagree
+    eventually, and nobody will be able to say which is wrong. So the model is
+    checked against the report it must agree with, not against constants.
+    """
+    run_id = _upload(WORKBOOK, QUESTION)["run_id"]
+    _post(f"/api/runs/{run_id}/start", {"auto": True})
+    _wait_idle(run_id)
+
+    model = _get(f"/api/runs/{run_id}/report-model")
+    assert model["counts"]["questions_answered"] >= 1
+    assert model["charts"], "visualize computed specs; they have to ship"
+    assert len(model["charts"]) == model["counts"]["charts"]
+
+    # Chart ids repeat across questions — a dozen questions each have a
+    # `chart_6` — so anything keying on `id` keeps only the last of each name.
+    uids = [c["uid"] for c in model["charts"]]
+    assert len(set(uids)) == len(uids), "chart uids must be unique per run"
+    assert set(model["trends"]) <= set(uids), "a trend must name a real chart"
+
+    # `table_fallback` is what a charting library reads and what the report's
+    # own SVG draws from. `chartjs` targets a library this UI does not use.
+    assert any(c.get("table_fallback") for c in model["charts"])
+    assert all("chartjs" not in c for c in model["charts"])
+
+    report = _get_text(f"/api/runs/{run_id}/artifact/report.html")
+    for card in model["kpis"]:
+        assert str(card["value"]) in report, (card["metric"], card["value"])
+
+
+def test_the_report_model_names_what_it_cannot_draw() -> None:
+    """Every tab is either usable or says which column it lacks."""
+    run_id = _upload(WORKBOOK, QUESTION)["run_id"]
+    _post(f"/api/runs/{run_id}/start", {"auto": True})
+    _wait_idle(run_id)
+
+    coverage = _get(f"/api/runs/{run_id}/report-model")["coverage"]
+
+    # Nothing in either workbook carries a planned duration, a disciplinary
+    # record or a timetable, and these three tabs must admit that on screen.
+    for tab in ("course_pacing", "disciplinary", "faculty_timetable"):
+        assert coverage[tab]["status"] == "unsupported", tab
+        assert coverage[tab]["reason"], f"{tab} has to say why"
+
+    for tab, row in coverage.items():
+        assert row["status"] in {"ok", "partial", "unsupported"}, tab
+        if row["status"] != "ok":
+            assert row["reason"], f"{tab} is not ok and gives no reason"
+
+
+def test_the_report_model_carries_no_student_identity() -> None:
+    """This payload goes to a browser; the upload's names and mobiles do not.
+
+    The masking happens upstream, which is exactly why it is worth asserting
+    here: a future section added to the model could reach past it.
+    """
+    run_id = _upload(WORKBOOK, QUESTION)["run_id"]
+    _post(f"/api/runs/{run_id}/start", {"auto": True})
+    _wait_idle(run_id)
+
+    blob = json.dumps(_get(f"/api/runs/{run_id}/report-model"))
+    assert not re.search(r"\b[6-9]\d{9}\b", blob), "an Indian mobile number"
+    assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.]{2,}", blob), "an email address"
 
 
 def test_only_masked_artifacts_are_servable() -> None:
